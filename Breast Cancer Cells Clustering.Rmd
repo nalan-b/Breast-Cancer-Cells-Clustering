@@ -1,0 +1,359 @@
+---
+title: "ITU Big Data Project_Cluster Analysis"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+Bu çalışma İTÜ Büyük Veri ve İş Analitiği eğitimi sonunda verilen Uzmanlık Sertifikasını hak etmek amacıyla hazırlanmıştır. Veri olarak UCI machine learning kaynağında yer alan "Breast Cancer Wisconsin (Diagnostic) Data Set" kullanılmıştır. Gözetimsiz Öğrenme algoritmaları uygulanarak veri setindeki kanser hücre değişkenlerinin benzerliklerine göre ilgili gruplara dağıtılması amaçlanmıştır.
+
+### 1.Paketlerin ve Verinin yüklenmesi:
+```{r,message=FALSE}
+library(knitr)
+library(tidyverse) 
+library(dplyr) 
+library(ggplot2) 
+library(purrr)
+library(cluster)
+library(ggcorrplot)
+
+wisc.df <- read.csv("C:/Users/pc/Desktop/Proje/breast_cancer_data.csv")
+
+```
+
+### 2.Veri setinin Düzenlenmesi
+
+```{r}
+str(wisc.df)
+
+# Veri setimizde kayıp değer (missing value) var mı kontrol edelim.
+
+sum(is.na(wisc.df)) 
+
+# NA içeren X kolonu veri setinden çıkarıldı.
+
+wisc.df$X <- NULL 
+
+sum(is.na(wisc.df))
+
+# Veri setine ait ilk 12 değişkeni dikkate alacağız. 13 ile 33 arasındaki değişkenleri veri setinden siliyoruz.
+
+wisc.df <- wisc.df[,-(13:33)] 
+
+kable(wisc.df[1:12,])
+```
+
+
+```{r}
+dim(wisc.df)
+```
+
+Her bir hücre gözlemi için hesaplanan değişkenlerin açıklamaları aşağıdaki gibidir:
+
+```{r}
+#1.ID -> Hücre çekirdek numarası
+#2.Diagnosis -> Hücre çekirdeğine ait tümörün iyi veya kötü huylu olduğunu belirten teşhis bilgisi. M=Malignant (Kötü Huylu) B=Benign (İyi huylu). 
+#3.radius_mean -> Ortalama yarıçap uzunluğu
+#4.texture_mean ->   Ortalama doku büyüklüğü
+#5.perimeter_mean -> Ortalama Çevre uzunluğu
+#6.area_mean -> Ortalama alan büyüklüğü
+#7.smoothness_mean ->  Ortalama yüzey büyüklüğü
+#8.compactness_mean -> ortalama yoğunluk
+#9.concavity_mean -> ortalama içbükey uzunluğu
+#10.concave points_mean -> ortalama içbükey nokta uzunluğu
+#11.symmetry_mean -> Ortalama simetri uzunluğu
+#12.fractal_dimension_mean -> Ortalama oransal kırılma boyutu 
+
+```
+
+
+####### Hücre çekirdek değişkenlerine ait özellikler 3.kolon ve sonrasında yer alıyor. Bu değişkenlere ait bir matris oluşturalım. Aynı türde değişkenleri bir veri yapısında toplamak için matrise çevirme işlemi uyguladık. 
+
+```{r}
+wisc.data <- as.matrix(wisc.df[3:12])
+
+```
+
+######## Hücre çekirdek numara bilgisini içeren ID numaralarını matrisin satır ismi olarak kaydedelim. Hücre çekirdek ID'nin modele bir katkısı olmayacağı için ID bilgisini değişkenlerden bağımsız olarak kaydettik.
+
+```{r}
+row.names(wisc.data) <- wisc.df$id
+```
+
+
+######## Amacımız iyi huylu (B) ve kötü huylu (M) kanser hücre değişkenlerini kümeleme algoritmalarını kullanarak benzerliklerine göre gruplara ayırmak. Çıkan sonuçları veri setimizle karşılaştıracağımız için teşhis bilgisini vektör veri yapısında saklıyoruz. Kanser hücresi kötü huylu ise 1, iyi huylu ise 0 olacak şekilde vektör oluşturuyoruz. 
+
+```{r}
+diagnosis <- as.numeric(wisc.df$diagnosis == "M")
+```
+
+####### Diagnosis vektörüne ait verilerin dağılımını öğrenelim.
+
+```{r}
+kable(table(diagnosis),align='l',caption = 'Teşhis Bilgisine ait Frekans Tablosu (0=Benign, 1=Malignant)')
+```
+
+Veri setini düzenleme işlemi bittikten sonra gözetimsiz öğrenme algoritmalarını uygulayacağımız veri seti 10 değişken ve 569 gözlemden oluşmaktadır. 
+
+```{r}
+dim(wisc.data)
+```
+
+Veri setindeki her bir değişkenin ölçüm birimi farklıdır. Bu yüzden veri setindeki değişkenleri normal dağılıma uygun hale getirmeliyiz. (Normal dağılım özellikleri: ortalama=0,standart sapma=1)
+
+Veri setine ait her bir değişken için ortalama değerlerini ve standart sapmalarını hesaplayalım.
+
+```{r}
+round(colMeans(wisc.data),2)
+
+```
+
+```{r}
+round(apply(wisc.data,2,sd),2)
+```
+
+scale() fonksiyonu ilgili değişkene ait her bir gözlemden, o değişkene ait gözlemlerin ortalamasını çıkarırır ve değişkendeki gözlemlerin standart sapmasına bölünme işlemini uygular. Ölçüm birimi farklı olan değişkenler için standarlaştırma işlemi uygulanmalıdır.
+
+```{r}
+wisc.data <- scale(wisc.data,center=TRUE,scale=TRUE)
+```
+
+### 3.Clustering Algorithms
+
+#### 3.1 K-Means Clustering
+
+####### K-means algoritmasında rastgele noktalar (k:random points) kümelerin merkez noktası belirlenir. Her bir gözlem için gözlem ve merkez noktası arasındaki uzaklık öklid uzaklığı ile ölçülür. Belirli iterasyon sonucunda gözlemler kümenin merkez noktasına yerleşir. K-means algoritmasında küme sayısı önceden tahmin edildiğinde k sayısı kmeans() fonksiyonuna uygulanır. Küme sayısı her zaman veri setindeki gözlem sayısından küçük olmalıdır. Belirli veri setleri haricinde (örneğin futbol takımındaki oyunculara ait bir kümeleme yapmak istiyorsak burada 2 takım olduğu için küme sayısını herhangi bir algoritma uygulamadan 2 seçmek mantıklıdır.) küme sayısı önceden bilinmeyebilir. Bu yüzden küme sayısını belirlemek için bir takım metotlar kullanılır. Burada Elbow ve Silhoutte metotlarındaki kurallara göre çıkan k sayısı K-means fonksiyonuna uygulanacak.
+
+##### Elbow Method:
+
+```{r}
+tot_withinss <- map_dbl(1:10,  function(k){
+model <- kmeans(x = wisc.data, centers = k)
+ model$tot.withinss
+})
+```
+
+```{r}
+elbow_df <- data.frame(
+  k = 1:10,
+	  tot_withinss = tot_withinss)
+```
+
+
+```{r}
+ggplot(elbow_df, aes(x = k, y = tot_withinss)) +
+	  geom_line() +
+	  scale_x_continuous(breaks = 1:10)
+```
+
+##### Silhouette Method:
+
+```{r}
+sil_width <- map_dbl(2:10,  function(k){
+	  model <- pam(wisc.data, k = k)
+model$silinfo$avg.width
+		})
+```
+
+```{r}
+sil_df <- data.frame(
+  k = 2:10,
+ sil_width = sil_width
+	)
+```
+
+```{r}
+ggplot(sil_df, aes(x = k, y = sil_width)) +
+ geom_line() +
+  scale_x_continuous(breaks = 2:10)
+```
+
+
+####### İki metot sonucunda da K-means için küme sayısının 2 olduğunu gözlemledik. wisc_km değişkenine k-means fonksiyonunu atayalım.
+
+```{r}
+wisc_km <- kmeans(wisc.data,centers=2)
+
+clust_km <- wisc_km$cluster 
+```
+
+####### 569 adet hücre ID'si belirlenen 2 kümeye benzerliklerine veya farklılıklarına göre dağıtıldı. İlk 50 gözlem için ait oldukları kümeleri görüntüleyelim.
+
+```{r}
+
+head(clust_km,50)
+```
+
+####### Değişkenlerin sahip olduğu küme bilgilerini kolon olarak ekleyelim.
+
+```{r}
+wisc_km_cluster <- mutate (wisc.df,cluster=clust_km) %>% 
+                  select(cluster,everything())
+
+kable(head((wisc_km_cluster),20))
+```
+
+####### Kümelere dağıtılan bazı değişkenlerin dağılımına bakalım.
+
+```{r}
+
+ggplot(wisc_km_cluster,aes(x=radius_mean,y=texture_mean)) + theme_bw() + geom_point(col=wisc_km$cluster)
+
+ggplot(wisc_km_cluster,aes(x=radius_mean,y=perimeter_mean)) + theme_bw() + geom_point(col=wisc_km$cluster)
+
+ggplot(wisc_km_cluster,aes(x=radius_mean,y=area_mean)) + theme_bw() + geom_point(col=wisc_km$cluster)
+
+
+ggplot(wisc_km_cluster,aes(x=radius_mean,y=compactness_mean
+)) + theme_bw() + geom_point(col=wisc_km$cluster)
+
+```
+
+
+```{r}
+kable(count(wisc_km_cluster,cluster),align='l')
+
+```
+
+
+####### K-means clustering modelinin performansı için veri setindeki teşhis bilgileri ile model çıktısını karşılaştıralım. 
+
+```{r}
+kable(table(diagnosis,wisc_km$cluster),align='l')
+
+```
+
+
+#### 3.2 PCA Algorithm (Principal Component Analysis)
+
+####### Dimension Reduction olarak da adlandırılır. "Dimension" veri setinde değişkenleri temsil eden veri noktalarıdır. "Dimensionality" ise veri setindeki değişkenler yani kolonlardır. PCA'da amaç değişkenler arasında ilişki kurmak, değişkenin çok olduğu veri setlerinde korelasyonu yüksek değişkenleri bir arada tutarak aynı zamanda veri setinin açıklanabilirliğini kaybetmemektir. PCA algoritması değişkeni fazla olan ve kategorik verisi olmayan veri setimiz için uygulayabileceğimiz diğer bir gözetimsiz öğrenme algoritmasıdır. 
+
+####### Önce değişkenler arasındaki korelasyonu inceleyelim.
+
+```{r}
+correl <- cor(wisc.data,use="complete.obs")
+
+ggcorrplot(correl)
+
+```
+
+####### Veri setine PCA modelini uygulayalım. Standarlaştırma işlemini wisc.data veri setine uyguladığımız için doğrudan prcomp() fonksiyonu uygulanabilir.
+
+```{r}
+wisc.pr <- prcomp(wisc.data)
+summary(wisc.pr)
+```
+
+```{r}
+dim(wisc.pr$rotation) ##PCA vektörleri orijinal veri setiyle aynı boyuta sahiptir.
+```
+
+```{r}
+wisc.pr$rotation[,1:10]
+```
+
+```{r}
+biplot(wisc.pr)
+```
+
+Veri setindeki veri noktaları ilk iki vektör ile beraber grafikte yer almaktadır. Aynı yönde olan "radius_mean, perimeter_mean,texture_mean ve area_mean" değişkenlerinin birbirleri ile ilişkileri yüksektir. Aynı zamanda symmetry_mean ve smoothness_mean arasındaki korelasyonun da güçlü olduğunu söyleyebiliriz. Zıt yönlü olan fractual_dimension_mean ve texture_mean değişkenlerine ait ilişki zayıftır.
+
+####### Scree plot : 
+
+```{r}
+par(mfrow = c(1, 2))
+
+pr.var <- wisc.pr$sdev^2 #her bir bileşenin varyansını hesaplayalım.
+pve <- pr.var / sum(pr.var)
+
+plot(pve, xlab = "Principal Component", 
+     ylab = "Proportion of Variance Explained", 
+     ylim = c(0, 1), type = "b") 
+
+plot(cumsum(pve), xlab = "Principal Component", 
+     ylab = "Cumulative Proportion of Variance Explained", 
+     ylim = c(0, 1), type = "b")
+abline(v=2,col="red",lty=5)
+```
+
+İki bileşeni kullanarak veri setinin 80% oranında değişkenliği açıkladığını gördük. Bu iki bileşene ait saçılım grafiğini görüntüleyelim.
+
+
+```{r}
+plot(wisc.pr$x[, c(1, 2)], col = (diagnosis + 1), xlab = "PC1", ylab = "PC2")
+```
+
+İlk İki bileşeni kullanarak iyi huylu ve kötü huylu tümörleri iyi bir performansla ayırabildiğimizi görüyoruz.
+
+
+#### 3.3 Hiearchical Clustering
+
+```{r}
+dist_wisc <- dist(wisc.data,method='euclidean')
+hc_wisc_complete <- hclust(dist_wisc, method= 'complete')
+hc_wisc_single <- hclust(dist_wisc, method= 'single')
+hc_wisc_average <- hclust(dist_wisc, method= 'average')
+
+```
+
+####### Methodlara ait dendogramları görselleştirelim.
+
+```{r}
+plot(hc_wisc_complete, main = 'Complete Linkage') 
+plot(hc_wisc_single, main = 'Single Linkage')
+plot(hc_wisc_average, main = 'Average Linkage')
+```
+
+```{r}
+cut_wisc <- cutree(hc_wisc_complete,k=4)
+
+```
+
+####### Veri setine değişkenlerin dağıtıldığı küme bilgilerini kolon olarak ekleyelim.
+
+```{r}
+cut_wisc_cluster <- mutate(wisc.df, cluster = cut_wisc) %>% 
+                    select(cluster,everything())
+
+kable(head(cut_wisc_cluster)) 
+```
+
+Kümelere dağıtılan bazı değişkenlerin dağılımına bakalım.
+
+```{r}
+ggplot(cut_wisc_cluster,aes(x=radius_mean,y=texture_mean)) + theme_bw() + geom_point(col=cut_wisc_cluster$cluster)
+
+ggplot(cut_wisc_cluster,aes(x=radius_mean,y=perimeter_mean)) + theme_bw() + geom_point(col=cut_wisc_cluster$cluster)
+
+ggplot(cut_wisc_cluster,aes(x=radius_mean,y=area_mean)) + theme_bw() +
+geom_point(col=cut_wisc_cluster$cluster)
+
+ggplot(cut_wisc_cluster,aes(x=radius_mean,y=compactness_mean)) + theme_bw() +
+geom_point(col=cut_wisc_cluster$cluster)
+
+```
+
+```{r}
+
+# Değişkenlerin kümelere nasıl dağıldığını görselleştirelim.
+
+ggplot(cut_wisc_cluster) + geom_bar(aes(x=cluster)) 
+
+
+kable(count(cut_wisc_cluster,cluster),align='l')
+```
+
+####### Hiearchical Clustering modelinin performansı için veri setindeki teşhis bilgileri ile model çıktısını karşılaştıralım. 
+
+```{r}
+kable(table(diagnosis,cut_wisc),align='l')
+```
+
+
+#### 4. K-Means ve Hiearchical Clustering Karşılaştırma
+
+```{r}
+kable(table(cut_wisc, wisc_km_cluster$cluster))
+```
+Kümelere dağıtılan gözlemleri incelersek; Hiearchical clustering algoritması ile oluşturulan 1. ve 2. kümeler K-means algoritmasındaki 2.küme olarak performans sergilerken, 3.ve 4. kümeler ise K-means algoritmasındaki 1.küme olarak performans göstermektedir.
+
